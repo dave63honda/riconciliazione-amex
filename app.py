@@ -47,7 +47,7 @@ def carica_mastrino(file):
     df['avere'] = df['Unnamed: 10'].apply(parse)
     df['amount'] = df['avere'] - df['dare']
 
-    return df[['amount','Unnamed: 22']].rename(columns={"Unnamed:22":"descrizione"})
+    return df[['amount','Unnamed: 22']].rename(columns={"Unnamed: 22":"descrizione"})
 
 
 # ---------------- SIMILARITA DESCRIZIONE ----------------
