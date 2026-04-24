@@ -4,7 +4,7 @@ import pdfplumber
 import re
 from io import BytesIO
 
-st.title("Riconciliazione Amex vs Mastrino - V3 stabile")
+st.title("Riconciliazione Amex vs Mastrino - V3 stabile veloce")
 
 pdf_file = st.file_uploader("Carica PDF Amex", type=["pdf"])
 excel_file = st.file_uploader("Carica Excel Mastrino", type=["xlsx","csv"])
@@ -21,7 +21,7 @@ def estrai_pdf(file):
             for m in matches:
                 val = float(m.replace('.', '').replace(',', '.'))
 
-                # filtro saldi enormi
+                # ignora saldi enormi
                 if val > 1000000:
                     continue
 
@@ -29,7 +29,7 @@ def estrai_pdf(file):
     return importi
 
 
-# ---------------- MASTRINO ROBUSTO ----------------
+# ---------------- MASTRINO ----------------
 def carica_mastrino(file):
 
     if file.name.endswith(".csv"):
@@ -37,7 +37,6 @@ def carica_mastrino(file):
     else:
         df = pd.read_excel(file, dtype=str)
 
-    # pulizia base
     df = df.fillna("")
 
     def parse(x):
@@ -54,10 +53,9 @@ def carica_mastrino(file):
             numeric_cols.append(col)
 
     if len(numeric_cols) < 2:
-        st.error("Non riesco a identificare le colonne Dare/Avere")
+        st.error("Non riesco a identificare Dare/Avere")
         return None
 
-    # assumiamo ultime 2 colonne numeriche come dare/avere
     dare_col = numeric_cols[-2]
     avere_col = numeric_cols[-1]
 
@@ -66,7 +64,7 @@ def carica_mastrino(file):
 
     df['amount'] = df['avere'] - df['dare']
 
-    # descrizione = colonna testuale più lunga
+    # descrizione = colonna più testuale
     text_cols = [col for col in df.columns if df[col].astype(str).str.len().mean() > 10]
     descr_col = text_cols[0] if text_cols else df.columns[0]
 
@@ -82,7 +80,7 @@ def similar(a, b):
     return any(word in b for word in a.split()[:3])
 
 
-# ---------------- MATCHING ----------------
+# ---------------- MATCHING VELOCE ----------------
 def matching_v3(amex, mastrino):
 
     used = set()
@@ -90,34 +88,40 @@ def matching_v3(amex, mastrino):
     da_verificare = []
     scartati = []
 
+    mastrino_list = mastrino.to_dict("records")
+
     for a in amex:
         trovato = False
 
-        for i in range(len(mastrino)):
+        # 🔹 MATCH DIRETTO
+        for i, row in enumerate(mastrino_list):
             if i in used:
                 continue
 
-            amt_i = mastrino.iloc[i]['amount']
-            desc_i = mastrino.iloc[i]['descrizione']
-
-            # MATCH DIRETTO
-            if abs(abs(amt_i) - a) < 0.01:
-                riconciliati.append((a, amt_i, "Diretto", desc_i))
+            if abs(abs(row["amount"]) - a) < 0.01:
+                riconciliati.append((a, row["amount"], "Diretto", row["descrizione"]))
                 used.add(i)
                 trovato = True
                 break
 
-            # MATCH COMPENSAZIONE
-            for j in range(i+1, len(mastrino)):
+        if trovato:
+            continue
+
+        # 🔹 MATCH COMPENSAZIONE LIMITATO (veloce)
+        for i in range(len(mastrino_list)):
+            if i in used:
+                continue
+
+            for j in range(i+1, min(i+30, len(mastrino_list))):
                 if j in used:
                     continue
 
-                amt_j = mastrino.iloc[j]['amount']
-                desc_j = mastrino.iloc[j]['descrizione']
-
-                somma = amt_i + amt_j
+                somma = mastrino_list[i]["amount"] + mastrino_list[j]["amount"]
 
                 if abs(abs(somma) - a) < 0.01:
+
+                    desc_i = mastrino_list[i]["descrizione"]
+                    desc_j = mastrino_list[j]["descrizione"]
 
                     if similar(desc_i, desc_j):
                         riconciliati.append((a, somma, "Compensazione", desc_i))
