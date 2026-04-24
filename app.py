@@ -4,7 +4,7 @@ import pdfplumber
 import re
 from io import BytesIO
 
-st.title("Riconciliazione Amex vs Mastrino - V3 stabile veloce")
+st.title("Riconciliazione Amex vs Mastrino - Versione stabile")
 
 pdf_file = st.file_uploader("Carica PDF Amex", type=["pdf"])
 excel_file = st.file_uploader("Carica Excel Mastrino", type=["xlsx","csv"])
@@ -39,36 +39,23 @@ def carica_mastrino(file):
 
     df = df.fillna("")
 
+    st.subheader("Seleziona colonne del mastrino")
+
+    col_dare = st.selectbox("Colonna DARE", df.columns)
+    col_avere = st.selectbox("Colonna AVERE", df.columns)
+    col_desc = st.selectbox("Colonna DESCRIZIONE", df.columns)
+
     def parse(x):
         try:
             return float(str(x).replace('.', '').replace(',', '.'))
         except:
             return 0
 
-    # trova colonne numeriche automaticamente
-    numeric_cols = []
-    for col in df.columns:
-        sample = df[col].astype(str).str.contains(r'\d+,\d+').sum()
-        if sample > 10:
-            numeric_cols.append(col)
-
-    if len(numeric_cols) < 2:
-        st.error("Non riesco a identificare Dare/Avere")
-        return None
-
-    dare_col = numeric_cols[-2]
-    avere_col = numeric_cols[-1]
-
-    df['dare'] = df[dare_col].apply(parse)
-    df['avere'] = df[avere_col].apply(parse)
+    df['dare'] = df[col_dare].apply(parse)
+    df['avere'] = df[col_avere].apply(parse)
 
     df['amount'] = df['avere'] - df['dare']
-
-    # descrizione = colonna più testuale
-    text_cols = [col for col in df.columns if df[col].astype(str).str.len().mean() > 10]
-    descr_col = text_cols[0] if text_cols else df.columns[0]
-
-    df['descrizione'] = df[descr_col]
+    df['descrizione'] = df[col_desc]
 
     return df[['amount','descrizione']]
 
@@ -80,7 +67,7 @@ def similar(a, b):
     return any(word in b for word in a.split()[:3])
 
 
-# ---------------- MATCHING VELOCE ----------------
+# ---------------- MATCHING ----------------
 def matching_v3(amex, mastrino):
 
     used = set()
@@ -93,7 +80,7 @@ def matching_v3(amex, mastrino):
     for a in amex:
         trovato = False
 
-        # 🔹 MATCH DIRETTO
+        # MATCH DIRETTO
         for i, row in enumerate(mastrino_list):
             if i in used:
                 continue
@@ -107,7 +94,7 @@ def matching_v3(amex, mastrino):
         if trovato:
             continue
 
-        # 🔹 MATCH COMPENSAZIONE LIMITATO (veloce)
+        # MATCH COMPENSAZIONE (limitato per velocità)
         for i in range(len(mastrino_list)):
             if i in used:
                 continue
@@ -181,5 +168,5 @@ if pdf_file and excel_file:
         st.download_button(
             "Scarica Excel",
             file_excel,
-            "riconciliazione_v3.xlsx"
+            "riconciliazione.xlsx"
         )
