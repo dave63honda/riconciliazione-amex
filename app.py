@@ -4,7 +4,7 @@ import pdfplumber
 import re
 from io import BytesIO
 
-st.title("Riconciliazione Amex vs Mastrino - Versione 3")
+st.title("Riconciliazione Amex vs Mastrino - V3 stabile")
 
 pdf_file = st.file_uploader("Carica PDF Amex", type=["pdf"])
 excel_file = st.file_uploader("Carica Excel Mastrino", type=["xlsx","csv"])
@@ -21,6 +21,7 @@ def estrai_pdf(file):
             for m in matches:
                 val = float(m.replace('.', '').replace(',', '.'))
 
+                # filtro saldi enormi
                 if val > 1000000:
                     continue
 
@@ -28,14 +29,16 @@ def estrai_pdf(file):
     return importi
 
 
-# ---------------- MASTRINO ----------------
+# ---------------- MASTRINO ROBUSTO ----------------
 def carica_mastrino(file):
-    if file.name.endswith(".csv"):
-        df = pd.read_csv(file, sep=';')
-    else:
-        df = pd.read_excel(file)
 
-    df = df.iloc[1:].copy()
+    if file.name.endswith(".csv"):
+        df = pd.read_csv(file, sep=';', dtype=str)
+    else:
+        df = pd.read_excel(file, dtype=str)
+
+    # pulizia base
+    df = df.fillna("")
 
     def parse(x):
         try:
@@ -43,23 +46,43 @@ def carica_mastrino(file):
         except:
             return 0
 
-    df['dare'] = df['Unnamed: 11'].apply(parse)
-    df['avere'] = df['Unnamed: 10'].apply(parse)
+    # trova colonne numeriche automaticamente
+    numeric_cols = []
+    for col in df.columns:
+        sample = df[col].astype(str).str.contains(r'\d+,\d+').sum()
+        if sample > 10:
+            numeric_cols.append(col)
+
+    if len(numeric_cols) < 2:
+        st.error("Non riesco a identificare le colonne Dare/Avere")
+        return None
+
+    # assumiamo ultime 2 colonne numeriche come dare/avere
+    dare_col = numeric_cols[-2]
+    avere_col = numeric_cols[-1]
+
+    df['dare'] = df[dare_col].apply(parse)
+    df['avere'] = df[avere_col].apply(parse)
+
     df['amount'] = df['avere'] - df['dare']
 
-    return df[['amount','Unnamed: 22']].rename(columns={"Unnamed: 22":"descrizione"})
+    # descrizione = colonna testuale più lunga
+    text_cols = [col for col in df.columns if df[col].astype(str).str.len().mean() > 10]
+    descr_col = text_cols[0] if text_cols else df.columns[0]
+
+    df['descrizione'] = df[descr_col]
+
+    return df[['amount','descrizione']]
 
 
-# ---------------- SIMILARITA DESCRIZIONE ----------------
+# ---------------- SIMILARITA ----------------
 def similar(a, b):
-    if pd.isna(a) or pd.isna(b):
-        return False
     a = str(a).lower()
     b = str(b).lower()
     return any(word in b for word in a.split()[:3])
 
 
-# ---------------- MATCHING V3 ----------------
+# ---------------- MATCHING ----------------
 def matching_v3(amex, mastrino):
 
     used = set()
@@ -117,12 +140,18 @@ def matching_v3(amex, mastrino):
 
 # ---------------- EXCEL ----------------
 def crea_excel(r, v, s):
+
     output = BytesIO()
     writer = pd.ExcelWriter(output, engine='openpyxl')
 
-    pd.DataFrame(r, columns=["Amex","Mastrino","Tipo","Descrizione"]).to_excel(writer, sheet_name="Riconciliati", index=False)
-    pd.DataFrame(v, columns=["Amex","Mastrino","Tipo","Descrizione"]).to_excel(writer, sheet_name="Da_verificare", index=False)
-    pd.DataFrame(s, columns=["Amex"]).to_excel(writer, sheet_name="Scartati", index=False)
+    pd.DataFrame(r, columns=["Amex","Mastrino","Tipo","Descrizione"])\
+        .to_excel(writer, sheet_name="Riconciliati", index=False)
+
+    pd.DataFrame(v, columns=["Amex","Mastrino","Tipo","Descrizione"])\
+        .to_excel(writer, sheet_name="Da_verificare", index=False)
+
+    pd.DataFrame(s, columns=["Amex"])\
+        .to_excel(writer, sheet_name="Scartati", index=False)
 
     writer.close()
     output.seek(0)
@@ -132,19 +161,21 @@ def crea_excel(r, v, s):
 # ---------------- MAIN ----------------
 if pdf_file and excel_file:
 
-    st.write("Elaborazione intelligente...")
+    st.write("Elaborazione...")
 
     amex = estrai_pdf(pdf_file)
     mastrino = carica_mastrino(excel_file)
 
-    r, v, s = matching_v3(amex, mastrino)
+    if mastrino is not None:
 
-    file_excel = crea_excel(r, v, s)
+        r, v, s = matching_v3(amex, mastrino)
 
-    st.success("Elaborazione completata")
+        file_excel = crea_excel(r, v, s)
 
-    st.download_button(
-        "Scarica Excel completo",
-        file_excel,
-        "riconciliazione_v3.xlsx"
-    )
+        st.success("Elaborazione completata")
+
+        st.download_button(
+            "Scarica Excel",
+            file_excel,
+            "riconciliazione_v3.xlsx"
+        )
