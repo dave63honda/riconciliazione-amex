@@ -4,18 +4,19 @@ import pdfplumber
 import re
 from io import BytesIO
 
-st.title("Riconciliazione Amex vs Mastrino - Versione stabile")
+st.title("Riconciliazione Amex vs Mastrino")
 
-pdf_file = st.file_uploader("Carica PDF Amex", type=["pdf"])
-excel_file = st.file_uploader("Carica Excel Mastrino", type=["xlsx","csv"])
+pdf_file = st.file_uploader("Carica PDF American Express", type=["pdf"])
+excel_file = st.file_uploader("Carica Excel Mastrino", type=["xlsx", "csv"])
 
 
 # ---------------- PDF ----------------
-def estrai_pdf(file):
+def estrai_importi_pdf(file):
     importi = []
     with pdfplumber.open(file) as pdf:
         for page in pdf.pages:
             text = page.extract_text() or ""
+
             matches = re.findall(r'\d{1,3}(?:\.\d{3})*,\d{2}', text)
 
             for m in matches:
@@ -25,25 +26,19 @@ def estrai_pdf(file):
                 if val > 1000000:
                     continue
 
-                importi.append(round(val,2))
+                importi.append(round(val, 2))
+
     return importi
 
 
 # ---------------- MASTRINO ----------------
 def carica_mastrino(file):
-
     if file.name.endswith(".csv"):
-        df = pd.read_csv(file, sep=';', dtype=str)
+        df = pd.read_csv(file, sep=';')
     else:
-        df = pd.read_excel(file, dtype=str)
+        df = pd.read_excel(file)
 
-    df = df.fillna("")
-
-    st.subheader("Seleziona colonne del mastrino")
-
-    col_dare = st.selectbox("Colonna DARE", df.columns)
-    col_avere = st.selectbox("Colonna AVERE", df.columns)
-    col_desc = st.selectbox("Colonna DESCRIZIONE", df.columns)
+    df = df.iloc[1:].copy()
 
     def parse(x):
         try:
@@ -51,72 +46,62 @@ def carica_mastrino(file):
         except:
             return 0
 
-    df['dare'] = df[col_dare].apply(parse)
-    df['avere'] = df[col_avere].apply(parse)
+    # QUESTE SONO LE COLONNE GIUSTE DEL TUO FILE ORIGINALE
+    df['dare'] = df['Unnamed: 11'].apply(parse)
+    df['avere'] = df['Unnamed: 10'].apply(parse)
 
     df['amount'] = df['avere'] - df['dare']
-    df['descrizione'] = df[col_desc]
 
-    return df[['amount','descrizione']]
-
-
-# ---------------- SIMILARITA ----------------
-def similar(a, b):
-    a = str(a).lower()
-    b = str(b).lower()
-    return any(word in b for word in a.split()[:3])
+    return df[['amount']]
 
 
-# ---------------- MATCHING ----------------
-def matching_v3(amex, mastrino):
+# ---------------- MATCHING SEMPLICE ----------------
+def matching(amex, mastrino):
 
-    used = set()
-    riconciliati = []
-    da_verificare = []
+    mastrino_list = mastrino['amount'].tolist()
+
+    match = []
     scartati = []
 
-    mastrino_list = mastrino.to_dict("records")
+    used = [False] * len(mastrino_list)
 
     for a in amex:
         trovato = False
 
         # MATCH DIRETTO
-        for i, row in enumerate(mastrino_list):
-            if i in used:
-                continue
-
-            if abs(abs(row["amount"]) - a) < 0.01:
-                riconciliati.append((a, row["amount"], "Diretto", row["descrizione"]))
-                used.add(i)
+        for i, m in enumerate(mastrino_list):
+            if not used[i] and abs(abs(m) - a) < 0.01:
+                match.append({
+                    "Importo Amex": a,
+                    "Importo Mastrino": m,
+                    "Tipo": "Diretto"
+                })
+                used[i] = True
                 trovato = True
                 break
 
         if trovato:
             continue
 
-        # MATCH COMPENSAZIONE (limitato per velocità)
+        # MATCH A COPPIE
         for i in range(len(mastrino_list)):
-            if i in used:
+            if used[i]:
                 continue
 
-            for j in range(i+1, min(i+30, len(mastrino_list))):
-                if j in used:
+            for j in range(i+1, len(mastrino_list)):
+                if used[j]:
                     continue
 
-                somma = mastrino_list[i]["amount"] + mastrino_list[j]["amount"]
+                somma = mastrino_list[i] + mastrino_list[j]
 
                 if abs(abs(somma) - a) < 0.01:
-
-                    desc_i = mastrino_list[i]["descrizione"]
-                    desc_j = mastrino_list[j]["descrizione"]
-
-                    if similar(desc_i, desc_j):
-                        riconciliati.append((a, somma, "Compensazione", desc_i))
-                    else:
-                        da_verificare.append((a, somma, "Compensazione dubbia", desc_i))
-
-                    used.add(i)
-                    used.add(j)
+                    match.append({
+                        "Importo Amex": a,
+                        "Importo Mastrino": somma,
+                        "Tipo": "Compensazione"
+                    })
+                    used[i] = True
+                    used[j] = True
                     trovato = True
                     break
 
@@ -124,25 +109,20 @@ def matching_v3(amex, mastrino):
                 break
 
         if not trovato:
-            scartati.append((a,))
+            scartati.append({
+                "Importo Amex": a
+            })
 
-    return riconciliati, da_verificare, scartati
+    return match, scartati
 
 
 # ---------------- EXCEL ----------------
-def crea_excel(r, v, s):
-
+def crea_excel(match, scartati):
     output = BytesIO()
     writer = pd.ExcelWriter(output, engine='openpyxl')
 
-    pd.DataFrame(r, columns=["Amex","Mastrino","Tipo","Descrizione"])\
-        .to_excel(writer, sheet_name="Riconciliati", index=False)
-
-    pd.DataFrame(v, columns=["Amex","Mastrino","Tipo","Descrizione"])\
-        .to_excel(writer, sheet_name="Da_verificare", index=False)
-
-    pd.DataFrame(s, columns=["Amex"])\
-        .to_excel(writer, sheet_name="Scartati", index=False)
+    pd.DataFrame(match).to_excel(writer, sheet_name="Match", index=False)
+    pd.DataFrame(scartati).to_excel(writer, sheet_name="Scartati", index=False)
 
     writer.close()
     output.seek(0)
@@ -154,19 +134,17 @@ if pdf_file and excel_file:
 
     st.write("Elaborazione...")
 
-    amex = estrai_pdf(pdf_file)
+    amex = estrai_importi_pdf(pdf_file)
     mastrino = carica_mastrino(excel_file)
 
-    if mastrino is not None:
+    match, scartati = matching(amex, mastrino)
 
-        r, v, s = matching_v3(amex, mastrino)
+    file_excel = crea_excel(match, scartati)
 
-        file_excel = crea_excel(r, v, s)
+    st.success("Elaborazione completata")
 
-        st.success("Elaborazione completata")
-
-        st.download_button(
-            "Scarica Excel",
-            file_excel,
-            "riconciliazione.xlsx"
-        )
+    st.download_button(
+        "Scarica risultato",
+        file_excel,
+        "riconciliazione.xlsx"
+    )
